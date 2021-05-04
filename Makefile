@@ -1,23 +1,20 @@
-CFLAGS = -Wall -Wextra -Werror -O2
+CFLAGS = -Wall -Wextra -O2 -g
 
 .PHONY: run
 run: kvm-hello-world
-	./kvm-hello-world
-	./kvm-hello-world -s
-	./kvm-hello-world -p
 	./kvm-hello-world -l
 
 kvm-hello-world: kvm-hello-world.o payload.o
-	$(CC) $^ -o $@
+	$(CC) -g $^ -o $@
 
 payload.o: payload.ld guest16.o guest32.img.o guest64.img.o
 	$(LD) -T $< -o $@
 
 guest64.o: guest.c
-	$(CC) $(CFLAGS) -m64 -ffreestanding -fno-pic -c -o $@ $^
+	$(CC) $(CFLAGS) -m64 -ffreestanding -fno-pic -c -g -o $@ $^
 
 guest64.img: guest64.o
-	$(LD) -T guest.ld $^ -o $@
+	$(LD) -Map guest.map -T guest.ld $^ -o $@
 
 guest32.o: guest.c
 	$(CC) $(CFLAGS) -m32 -ffreestanding -fno-pic -c -o $@ $^
@@ -32,4 +29,4 @@ guest32.img: guest32.o
 clean:
 	$(RM) kvm-hello-world kvm-hello-world.o payload.o guest16.o \
 		guest32.o guest32.img guest32.img.o \
-		guest64.o guest64.img guest64.img.o
+		guest64.o guest64.img guest64.img.o 

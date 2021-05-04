@@ -1,8 +1,20 @@
 #include <stddef.h>
 #include <stdint.h>
 
-static void outb(uint16_t port, uint8_t value) {
-	asm("outb %0,%1" : /* empty */ : "a" (value), "Nd" (port) : "memory");
+#include "io.h"
+#include "fs.h"
+
+
+static inline uint32_t getNumExits() {
+	return inb(0xF8);
+}
+
+static inline void printVal(uint32_t val) {
+	outb(0xF9, val);
+}
+
+static inline void display(const char *str) {
+	outb(0xFA, str);
 }
 
 void
@@ -13,6 +25,20 @@ _start(void) {
 
 	for (p = "Hello, world!\n"; *p; ++p)
 		outb(0xE9, *p);
+
+	static int fd = 0;
+	static char *buf = "abcdefgh\n";
+
+	display(buf);
+
+	fd = open("test.txt", O_WRONLY);
+	printVal(fd);
+
+	read((int) fd, (char *) buf, 4);
+
+	display(buf);
+
+	write((int) fd, "GoodBye", 7);
 
 	*(long *) 0x400 = 42;
 

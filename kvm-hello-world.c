@@ -63,6 +63,27 @@
 #define PDE64_PS (1U << 7)
 #define PDE64_G (1U << 8)
 
+/* File system */
+typedef struct _hypercall_open {
+    char *fname;
+    int flags;
+	int fd;
+} hypercall_open;
+
+typedef struct _hypercall_read {
+    int fd;
+    void *buf;
+    size_t count;
+	size_t ret;
+} hypercall_read;
+
+typedef struct _hypercall_write {
+    int fd;
+    void *buf;
+    size_t count;
+	size_t ret;
+} hypercall_write;
+/**/
 
 struct vm {
 	int sys_fd;
@@ -157,25 +178,103 @@ int run_vm(struct vm *vm, struct vcpu *vcpu, size_t sz)
 {
 	struct kvm_regs regs;
 	uint64_t memval = 0;
+	uint32_t exits = 0;
 
 	for (;;) {
 		if (ioctl(vcpu->fd, KVM_RUN, 0) < 0) {
 			perror("KVM_RUN");
 			exit(1);
 		}
+		exits++;
 
 		switch (vcpu->kvm_run->exit_reason) {
 		case KVM_EXIT_HLT:
 			goto check;
 
 		case KVM_EXIT_IO:
-			if (vcpu->kvm_run->io.direction == KVM_EXIT_IO_OUT
-			    && vcpu->kvm_run->io.port == 0xE9) {
+			if (vcpu->kvm_run->io.direction == KVM_EXIT_IO_OUT) {
 				char *p = (char *)vcpu->kvm_run;
-				fwrite(p + vcpu->kvm_run->io.data_offset,
-				       vcpu->kvm_run->io.size, 1, stdout);
-				fflush(stdout);
-				continue;
+				uint32_t data;
+				memcpy(&data, p + vcpu->kvm_run->io.data_offset, sizeof(uint32_t));
+
+			    if (vcpu->kvm_run->io.port == 0xE9) {
+					fwrite(p + vcpu->kvm_run->io.data_offset,
+						   vcpu->kvm_run->io.size, 1, stdout);
+					fflush(stdout);
+					continue;
+				} else if (vcpu->kvm_run->io.port == 0xF9) {
+					fprintf(stdout, "%d\n", data);
+					fflush(stdout);
+					continue;
+				} else if (vcpu->kvm_run->io.port == 0xFA) {
+					char *str = vm->mem + (uint64_t) (data & 0xFF);
+					fprintf(stdout, "%s", str);
+					fflush(stdout);
+					continue;
+				}
+
+				// File system
+				if (vcpu->kvm_run->io.port == 0xA0) { // Open
+					hypercall_open *hopen = (hypercall_open *) (vm->mem + data);
+					char *fname = vm->mem + (uint64_t) hopen->fname;
+					int flags = hopen->flags;
+
+					fprintf(stdout, "open(%s, %d)\n", fname, flags);
+
+					int fd;
+					if ((fd = open(fname, flags)) <= 0) {
+						perror("OPEN");
+						exit(1);
+					}
+					hopen->fd = fd;
+
+					fprintf(stdout, "fd = %d\n", fd);
+					fflush(stdout);
+					continue;
+				} else if (vcpu->kvm_run->io.port == 0xB0) { // Read
+					hypercall_read *hread = (hypercall_read *) (vm->mem + data);
+					int fd = hread->fd;
+					char *buf = (char *) (vm->mem + (uint64_t) hread->buf);
+					size_t count = hread->count;
+
+					fprintf(stdout, "read(%d, %llx, %d)\n", fd, (unsigned long long) buf, (int) count);
+
+					size_t ret;
+					if ((ret = read(fd, buf, count)) != count) {
+						perror("READ");
+					}
+					hread->ret = ret;
+
+					fprintf(stdout, "ret = %d\n", (int) ret);
+					fflush(stdout);
+
+					continue;
+				} else if (vcpu->kvm_run->io.port == 0xC0) { // Write
+					hypercall_write *hwrite = (hypercall_write *) (vm->mem + data);
+					int fd = hwrite->fd;
+					char *buf = (char *) (vm->mem + (uint64_t) hwrite->buf);
+					size_t count = hwrite->count;
+
+					fprintf(stdout, "write(%d, %llx, %d)\n", fd, (unsigned long long) buf, (int) count);
+
+					size_t ret;
+					if ((ret = write(fd, buf, count)) != count) {
+						perror("WRITE");
+					}
+					hwrite->ret = ret;
+
+					fprintf(stdout, "ret = %d\n", (int) ret);
+					fflush(stdout);
+
+					continue;
+				}
+
+			} else if (vcpu->kvm_run->io.direction == KVM_EXIT_IO_IN) {
+				char *p = (char *)vcpu->kvm_run;
+				if (vcpu->kvm_run->io.port == 0xF8) {
+					memcpy((uint32_t *)(p + vcpu->kvm_run->io.data_offset), &exits, sizeof(uint32_t));
+					continue;
+				}
 			}
 
 			/* fall through */
@@ -241,6 +340,9 @@ int run_real_mode(struct vm *vm, struct vcpu *vcpu)
 	}
 
 	memcpy(vm->mem, guest16, guest16_end-guest16);
+	fprintf(stdout, "guest: [%llx, %llx), host: [%llx, %llx)\n",
+			(unsigned long long int) 0, (unsigned long long int) (guest16_end-guest16),
+			(unsigned long long int) vm->mem, (unsigned long long int) (vm->mem + (guest16_end - guest16)));
 	return run_vm(vm, vcpu, 2);
 }
 
@@ -300,6 +402,9 @@ int run_protected_mode(struct vm *vm, struct vcpu *vcpu)
 	}
 
 	memcpy(vm->mem, guest32, guest32_end-guest32);
+	fprintf(stdout, "guest: [%llx, %llx), host: [%llx, %llx)\n",
+			(unsigned long long int) 0, (unsigned long long int) (guest32_end - guest32),
+			(unsigned long long int) vm->mem, (unsigned long long int) (vm->mem + (guest32_end - guest32)));
 	return run_vm(vm, vcpu, 4);
 }
 
@@ -350,6 +455,9 @@ int run_paged_32bit_mode(struct vm *vm, struct vcpu *vcpu)
 	}
 
 	memcpy(vm->mem, guest32, guest32_end-guest32);
+	fprintf(stdout, "guest: [%llx, %llx), host: [%llx, %llx)\n",
+			(unsigned long long int) 0, (unsigned long long int) (guest32_end - guest32),
+			(unsigned long long int) vm->mem, (unsigned long long int) (vm->mem + (guest32_end - guest32)));
 	return run_vm(vm, vcpu, 4);
 }
 
@@ -433,6 +541,9 @@ int run_long_mode(struct vm *vm, struct vcpu *vcpu)
 	}
 
 	memcpy(vm->mem, guest64, guest64_end-guest64);
+	fprintf(stdout, "guest: [%llx, %llx), host: [%llx, %llx)\n",
+			(unsigned long long int) 0, (unsigned long long int) (guest64_end - guest64),
+			(unsigned long long int) vm->mem, (unsigned long long int) (vm->mem + (guest64_end - guest64)));
 	return run_vm(vm, vcpu, 8);
 }
 
